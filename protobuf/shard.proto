@@ -20,9 +20,8 @@ option (gogoproto.testgen_all) = true;
 
 message Shard {
     bytes file_signature=1;
-    bytes shard_signature=2;
-    bytes shard_data = 3;
-    uint64 shard_number=4;
-    uint64 total_shards=5;
-    uint64 minimum_needed_shards=6;
+    bytes shard_data = 2;
+    uint64 shard_number=3;
+    uint64 total_shards=4;
+    uint64 minimum_needed_shards=5;
 }

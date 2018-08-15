@@ -52,7 +52,6 @@ type ShardPlugin struct {
 func (state *ShardPlugin) Receive(ctx *network.PluginContext) error {
 	switch msg := ctx.Message().(type) {
 	case *erasurecode.Shard:
-
 		shardsMemPoolInterface, _ := state.Shards.Load(fmt.Sprintf("%x", msg.GetFileSignature()))
 		if shardsMemPoolInterface == nil {
 			var shardsMemPool []infectious.Share
@@ -63,7 +62,6 @@ func (state *ShardPlugin) Receive(ctx *network.PluginContext) error {
 			state.Shards.Store(fmt.Sprintf("%x", msg.GetFileSignature()), shardsMemPool)
 		} else {
 			shardsMemPool := (shardsMemPoolInterface).([]infectious.Share)
-
 			if len(shardsMemPool) < int(msg.MinimumNeededShards) {
 				shardsMemPool = append(shardsMemPool, infectious.Share{
 					Data:   msg.GetShardData(),
@@ -71,10 +69,8 @@ func (state *ShardPlugin) Receive(ctx *network.PluginContext) error {
 				})
 				state.Shards.Delete(fmt.Sprintf("%x", msg.GetFileSignature()))
 				state.Shards.Store(fmt.Sprintf("%x", msg.GetFileSignature()), shardsMemPool)
-
-			} else {
+			} else if len(shardsMemPool) >= int(msg.MinimumNeededShards) && len(shardsMemPool) <= int(msg.GetTotalShards()) {
 				f, err := infectious.NewFEC(int(msg.GetMinimumNeededShards()), int(msg.GetTotalShards()))
-
 				if err != nil {
 					glog.Errorf("%+v", err)
 				}
@@ -83,19 +79,26 @@ func (state *ShardPlugin) Receive(ctx *network.PluginContext) error {
 					glog.Errorf("%+v", err)
 				}
 				// confirm complete file signature is not damaged
-
-				if !crypto.Verify(
+				verification := crypto.Verify(
 					state.SignaturePolicy,
 					state.HashPolicy,
 					ctx.Client().ID.PublicKey,
 
 					serializeMessage(ctx.Sender(), completeMessage),
 					msg.GetFileSignature(),
-				) {
-					return errors.New("Decoded message had an malformed signature")
+				)
+				if verification {
+					state.Shards.Delete(fmt.Sprintf("%x", msg.GetFileSignature()))
+					glog.Infof("\n\nCompleted Message\n%s\n\n", fmt.Sprintf("%x", completeMessage))
+
+				} else {
+					glog.Infof("Decoded message had an malformed signature ... \n ")
+					if len(shardsMemPool) == int(msg.GetTotalShards()) {
+						return errors.New("Could not put together the message due to corruption")
+					}
 				}
-				state.Shards.Delete(fmt.Sprintf("%x", msg.GetFileSignature()))
-				glog.Infof("\n\nCompleted Message\n%s\n\n", fmt.Sprintf("%x", completeMessage))
+			} else {
+				return errors.New("Shards mempool is larger than maximum size")
 			}
 		}
 	}
@@ -161,12 +164,11 @@ func main() {
 		glog.Fatal(err)
 		return
 	}
+	glog.Infof("\n\nErasure code pluging Loaded\n\nDefault Minimum Number of needed chunks = [ %d ]\nDefault Total Number of chunks = [ %d ]\n", shardplugin.MinimumNeededShards, shardplugin.TotalShards)
 
-	glog.Infof("\n\nnet.Listen()\n\n")
 	go net.Listen()
 
 	if len(peers) > 0 {
-		glog.Infof("\n\nnet.Bootstrap()\n\n")
 		net.Bootstrap(peers...)
 	}
 
@@ -177,13 +179,22 @@ func main() {
 		if len(strings.TrimSpace(input)) == 0 {
 			continue
 		}
-		glog.Infof("\nMessage Sender\n%s\n\nMessage Byte Slice\n%x\n\n", net.Address, []byte(input))
 
+		glog.Infof("\nMessage Sender\n%s\n\nMessage Byte Slice\n%x\nNumber of bytes = [ %d ] \n", net.Address, []byte(input), len([]byte(input)))
+
+		if len([]byte(input))%shardplugin.MinimumNeededShards != 0 {
+			latgestPrimeFactor := largestPrimeFactors(len([]byte(input)))
+			shardplugin.MinimumNeededShards = latgestPrimeFactor
+			shardplugin.TotalShards = shardplugin.TotalShards + shardplugin.MinimumNeededShards
+			glog.Infof("\n\nRevised Minimum Number of needed chunks = [ %d ]\nRevised Total Number of chunks = [ %d ]\n", shardplugin.MinimumNeededShards, shardplugin.TotalShards)
+
+		}
 		err = shardplugin.ShardAndBroadcast(net, []byte(input))
 		if err != nil {
 			glog.Fatal(err)
 			return
 		}
+
 	}
 
 }
@@ -215,23 +226,13 @@ func (shardplugin *ShardPlugin) prepareShards(net *network.Network, input []byte
 		return nil, err
 	}
 	for _, inputShard := range *inputShards {
-		shardSignature, err := net.GetKeys().Sign(
-			shardplugin.SignaturePolicy,
-			shardplugin.HashPolicy,
-
-			serialiseShard(net.ID, inputShard),
-		)
-		if err != nil {
-			return nil, err
-		}
 
 		msg := erasurecode.Shard{
 			FileSignature:       fileSignature,
-			ShardSignature:      shardSignature,
 			ShardData:           inputShard.Data,
 			ShardNumber:         uint64(inputShard.Number),
-			TotalShards:         uint64(totalShards),
-			MinimumNeededShards: uint64(minimumNeededShards),
+			TotalShards:         uint64(shardplugin.TotalShards),
+			MinimumNeededShards: uint64(shardplugin.MinimumNeededShards),
 		}
 
 		result = append(result, msg)
@@ -243,6 +244,7 @@ func (shardplugin *ShardPlugin) shardInput(input []byte) (*[]infectious.Share, e
 
 	// Create a *FEC, which will require required pieces for reconstruction at
 	// minimum, and generate total total pieces.
+
 	f, err := infectious.NewFEC(shardplugin.MinimumNeededShards, shardplugin.TotalShards)
 	if err != nil {
 		return nil, err
@@ -297,4 +299,37 @@ func serializeMessage(id peer.ID, message []byte) []byte {
 	}
 
 	return serialized
+}
+func largestPrimeFactors(n int) int {
+	var primes []int
+	result := -1
+
+	// Get the number of 2s that divide n
+	for n%2 == 0 {
+		primes = append(primes, 2)
+		n = n / 2
+	}
+
+	// n must be odd at this point. so we can skip one element
+	// (note i = i + 2)
+	for i := 3; i*i <= n; i = i + 2 {
+		// while i divides n, append i and divide n
+		for n%i == 0 {
+			primes = append(primes, i)
+			n = n / i
+		}
+	}
+
+	// This condition is to handle the case when n is a prime number
+	// greater than 2
+	if n > 2 {
+		primes = append(primes, n)
+	}
+	for _, e := range primes {
+		if e >= result {
+			result = e
+		}
+	}
+
+	return result
 }
