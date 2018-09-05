@@ -39,12 +39,12 @@ func (plugin *Plugin) Receive(ctx *network.PluginContext) error {
 
 				plugin.Shards.Store(fileSignature, shardPool)
 			} else if len(shardPool) >= int(msg.MinimumRequiredShards) && len(shardPool) <= int(msg.GetTotalShards()) {
-				f, err := infectious.NewFEC(int(msg.MinimumRequiredShards), int(msg.GetTotalShards()))
+				fec, err := infectious.NewFEC(int(msg.MinimumRequiredShards), int(msg.GetTotalShards()))
 				if err != nil {
 					return err
 				}
 
-				decoded, err := f.Decode(nil, shardPool)
+				decoded, err := fec.Decode(nil, shardPool)
 				if err != nil {
 					return err
 				}
