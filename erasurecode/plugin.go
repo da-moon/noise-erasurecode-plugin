@@ -2,7 +2,6 @@ package erasurecode
 
 import (
 	"encoding/binary"
-	"fmt"
 	"github.com/golang/glog"
 	"github.com/perlin-network/noise/crypto"
 	"github.com/perlin-network/noise/network"
@@ -66,8 +65,8 @@ func (plugin *Plugin) Receive(ctx *network.PluginContext) error {
 				)
 
 				if verified {
-					plugin.Shards.Delete(fmt.Sprintf("%x", msg.GetFileSignature()))
-					glog.Infof("\n\nCompleted Message\n%s\n\n", fmt.Sprintf("%x", decoded))
+					plugin.Shards.Delete(fileSignature)
+					glog.Infof("\n\nCompleted Message\n%s\n\n", fileSignature)
 
 				} else {
 					glog.Infof("Decoded message had an malformed signature ... \n ")
